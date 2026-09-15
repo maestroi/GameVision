@@ -19,6 +19,7 @@ RUN chmod +x /usr/local/bin/gamevision-entrypoint && \
 
 ENV GAMEVISION_BASE_URL=http://192.168.50.81:8002/v1 \
     GAMEVISION_MODEL=Qwen3-VL-4B-Instruct \
+    GAMEVISION_MODEL_MATCH=Qwen3-VL-4B \
     GAMEVISION_REQUIRE_VISION=1 \
     GAMEVISION_WATCH_VISION=1
 
