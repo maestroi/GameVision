@@ -12,6 +12,7 @@ Traefik labels, DNS records, certificates, or a public route.
 - Swarm host port: `18082`
 - vision endpoint: `http://192.168.50.81:8002/v1`
 - model: `Qwen3-VL-4B-Instruct`
+- model identity match: `Qwen3-VL-4B`
 - ROM on the Swarm node: `/opt/gamevision/roms/pokemon_red.gb`
 - persistent data: `/opt/gamevision` -> `/data`
 
@@ -21,17 +22,18 @@ node's HTTP port `18082`, the same way `pokemon.labstack.cc` is routed today.
 ## Vision availability gate
 
 The container does not assume that `:8002` is a vision server just because of a
-configured model name. Before starting the game it sends a real OpenAI-compatible
-chat completion containing a tiny PNG.
+configured model name. Before starting the game it first verifies that
+`/v1/models` contains the configured 4B VL identity and then sends a real
+OpenAI-compatible chat completion containing a 32x32 PNG.
 
 If `192.168.50.81:8002` is currently running the text-only/no-mmproj model, the
-probe fails and the task remains in preflight without binding `:8099`. When the
+preflight fails and the task remains waiting without binding `:8099`. When the
 4B vision model becomes available, the task starts automatically.
 
-After startup PID 1 repeats that multimodal probe every 30 seconds. If the vision
-endpoint disappears or is switched back to a text-only model, it terminates
-GameVision. Swarm restarts the task, which waits in preflight until multimodal
-inference is available again.
+After startup PID 1 checks the cheap `/v1/models` endpoint every 30 seconds rather
+than consuming extra VLM completions. If the 4B VL model disappears or the host
+becomes unreachable, it terminates GameVision. Swarm restarts the task, which
+waits in preflight until multimodal inference is available again.
 
 Set `GAMEVISION_REQUIRE_VISION=0` and `GAMEVISION_WATCH_VISION=0` only for manual
 debugging where this guard is unwanted.
@@ -75,6 +77,7 @@ Override stack defaults from the manager environment before `docker stack deploy
 export GAMEVISION_IMAGE=ghcr.io/maestroi/gamevision:latest
 export GAMEVISION_BASE_URL=http://192.168.50.81:8002/v1
 export GAMEVISION_MODEL=Qwen3-VL-4B-Instruct
+export GAMEVISION_MODEL_MATCH=Qwen3-VL-4B
 export GAMEVISION_PORT=18082
 export GAMEVISION_ROM=/opt/gamevision/roms/pokemon_red.gb
 export GAMEVISION_STATE_DIR=/opt/gamevision
