@@ -6,6 +6,7 @@ model="${GAMEVISION_MODEL:-Qwen3-VL-4B-Instruct}"
 api_key="${GAMEVISION_API_KEY:-}"
 probe_timeout="${GAMEVISION_VISION_PROBE_TIMEOUT:-30}"
 wait_interval="${GAMEVISION_VISION_WAIT_INTERVAL:-10}"
+watch_interval="${GAMEVISION_VISION_WATCH_INTERVAL:-30}"
 # 1x1 PNG. A text-only llama-server started without mmproj rejects this
 # multimodal request; a working vision endpoint accepts it.
 probe_png='iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII='
@@ -31,7 +32,7 @@ vision_probe() {
 wait_for_vision() {
   echo "GameVision: waiting for multimodal model '$model' at $base_url"
   until vision_probe; do
-    echo "GameVision: vision probe failed; :8002 is unavailable or is not currently serving the configured vision model"
+    echo "GameVision: vision probe failed; inference is unavailable or is not currently multimodal"
     sleep "$wait_interval"
   done
   echo "GameVision: vision probe succeeded"
@@ -52,4 +53,32 @@ if [ "${GAMEVISION_REQUIRE_VISION:-1}" != "0" ]; then
   wait_for_vision
 fi
 
-exec /usr/local/bin/gamevision "$@"
+# Keep PID 1 as a small supervisor. If :8002 is switched back to the text-only
+# model while GameVision is running, stop the game process. Swarm restarts this
+# task and the next instance waits in preflight until vision is available again.
+/usr/local/bin/gamevision "$@" &
+child=$!
+
+stop_child() {
+  if kill -0 "$child" 2>/dev/null; then
+    kill -TERM "$child" 2>/dev/null || true
+  fi
+  wait "$child" 2>/dev/null || true
+}
+trap 'stop_child; exit 0' INT TERM
+
+if [ "${GAMEVISION_WATCH_VISION:-1}" != "0" ]; then
+  while kill -0 "$child" 2>/dev/null; do
+    sleep "$watch_interval"
+    if ! kill -0 "$child" 2>/dev/null; then
+      break
+    fi
+    if ! vision_probe; then
+      echo "GameVision: multimodal inference disappeared; stopping until the vision model returns"
+      stop_child
+      exit 1
+    fi
+  done
+fi
+
+wait "$child"
