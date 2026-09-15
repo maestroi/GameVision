@@ -1,0 +1,71 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Go checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out GameVision
+        uses: actions/checkout@v4
+        with:
+          path: GameVision
+
+      # GameVision intentionally uses a sibling checkout during development:
+      #   replace github.com/maestroi/gomeboy => ../gomeboy
+      - name: Check out gomeboy
+        uses: actions/checkout@v4
+        with:
+          repository: maestroi/gomeboy
+          ref: v1.1.0
+          path: gomeboy
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: GameVision/go.mod
+          cache-dependency-path: GameVision/go.sum
+
+      - name: Verify formatting
+        working-directory: GameVision
+        shell: bash
+        run: |
+          set -euo pipefail
+          unformatted="$(gofmt -l .)"
+          if [[ -n "$unformatted" ]]; then
+            echo "The following Go files need gofmt:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: Verify modules
+        working-directory: GameVision
+        run: go mod verify
+
+      - name: Vet
+        working-directory: GameVision
+        run: go vet ./...
+
+      - name: Test with race detector
+        working-directory: GameVision
+        run: go test -race -count=1 ./...
+
+      - name: Build
+        working-directory: GameVision
+        run: go build ./cmd/gamevision
