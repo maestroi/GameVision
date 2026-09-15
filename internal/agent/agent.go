@@ -9,36 +9,48 @@ import (
 	"github.com/maestroi/gamevision/pkg/game"
 )
 
-// DecisionRequest is one mostly-stateless visual policy query.
+// DecisionRequest is one visual-policy query. The screenshot remains the
+// source of truth; the extra fields are only short-lived memory inferred from
+// earlier screenshots and action outcomes.
 type DecisionRequest struct {
-	Observation game.Observation
-	Game        string
-	Goal        string
-	Actions     []game.Action
-	History     []game.Action
-	// UnchangedScreen is true when this screenshot matches the previous one
-	// (last action hit a wall, was blocked, or did nothing).
-	UnchangedScreen bool
+	Observation  game.Observation
+	Game         string
+	Goal         string
+	Actions      []game.Action
+	History      []game.Action
+	Subgoal      string
+	LastScene    string
+	LastOutcome  string
+	LastExpected string
 }
 
-// Decision is a parsed controller action plus enough telemetry to compare models.
+// Decision is a parsed short-horizon controller plan plus enough telemetry to
+// compare models. Repeat is a requested bounded burst; runtime may shorten it
+// after visual verification.
 type Decision struct {
-	Action    game.Action
-	Raw       string
-	Invalid   bool
-	Retried   bool
-	Inference time.Duration
-	Parse     time.Duration
-	Error     string
-	Timeout   bool
+	Action     game.Action
+	Repeat     int
+	Scene      string
+	Subgoal    string
+	Expected   string
+	Confidence float64
+	Raw        string
+	Invalid    bool
+	Retried    bool
+	Inference  time.Duration
+	Parse      time.Duration
+	Error      string
+	Timeout    bool
 }
 
-// Agent chooses one action from pixels. It is a visual policy, not a chatbot.
+// Agent chooses a short-horizon action from pixels. It is still vision-first:
+// persistent state is limited to model-inferred scene/subgoal context and
+// observed consequences of previous inputs.
 type Agent interface {
 	Decide(ctx context.Context, req DecisionRequest) (Decision, error)
 }
 
-// VisionAgent asks an external VLM for a single action name.
+// VisionAgent asks an external VLM for a small visual control decision.
 type VisionAgent struct {
 	Client Completer
 }
@@ -58,6 +70,7 @@ func (a *VisionAgent) Decide(ctx context.Context, req DecisionRequest) (Decision
 	if err != nil {
 		d := Decision{
 			Action:    fallback(req.Actions),
+			Repeat:    1,
 			Invalid:   true,
 			Inference: res.Latency,
 			Error:     err.Error(),
@@ -67,22 +80,18 @@ func (a *VisionAgent) Decide(ctx context.Context, req DecisionRequest) (Decision
 	}
 
 	parseStart := time.Now()
-	action, ok := ParseAction(res.Text, req.Actions)
+	out, ok := ParsePolicy(res.Text, req.Actions)
 	parseDur := time.Since(parseStart)
 	if ok {
-		return Decision{
-			Action:    action,
-			Raw:       res.Text,
-			Inference: res.Latency,
-			Parse:     parseDur,
-		}, nil
+		return decisionFromPolicy(out, res.Text, res.Latency, parseDur, false), nil
 	}
 
-	retryPrompt := prompt + "\n\nYour previous reply was invalid. Return exactly one JSON object like {\"action\":\"A\"} using a valid action, and nothing else."
+	retryPrompt := prompt + "\n\nYour previous reply was invalid. Return exactly one JSON object using a valid action and no prose."
 	res2, err := a.Client.Complete(ctx, retryPrompt, req.Observation.Image)
 	if err != nil {
 		return Decision{
 			Action:    fallback(req.Actions),
+			Repeat:    1,
 			Raw:       res.Text,
 			Invalid:   true,
 			Retried:   true,
@@ -93,11 +102,12 @@ func (a *VisionAgent) Decide(ctx context.Context, req DecisionRequest) (Decision
 		}, nil
 	}
 	parseStart = time.Now()
-	action, ok = ParseAction(res2.Text, req.Actions)
+	out, ok = ParsePolicy(res2.Text, req.Actions)
 	parseDur += time.Since(parseStart)
 	if !ok {
 		return Decision{
 			Action:    fallback(req.Actions),
+			Repeat:    1,
 			Raw:       res.Text + "\n--- retry ---\n" + res2.Text,
 			Invalid:   true,
 			Retried:   true,
@@ -105,13 +115,23 @@ func (a *VisionAgent) Decide(ctx context.Context, req DecisionRequest) (Decision
 			Parse:     parseDur,
 		}, nil
 	}
+	d := decisionFromPolicy(out, res2.Text, res.Latency+res2.Latency, parseDur, true)
+	return d, nil
+}
+
+func decisionFromPolicy(out PolicyOutput, raw string, inferenceDur, parseDur time.Duration, retried bool) Decision {
 	return Decision{
-		Action:    action,
-		Raw:       res2.Text,
-		Retried:   true,
-		Inference: res.Latency + res2.Latency,
-		Parse:     parseDur,
-	}, nil
+		Action:     out.Action,
+		Repeat:     out.Repeat,
+		Scene:      out.Scene,
+		Subgoal:    out.Subgoal,
+		Expected:   out.Expected,
+		Confidence: out.Confidence,
+		Raw:        raw,
+		Retried:    retried,
+		Inference:  inferenceDur,
+		Parse:      parseDur,
+	}
 }
 
 func fallback(actions []game.Action) game.Action {
@@ -119,9 +139,6 @@ func fallback(actions []game.Action) game.Action {
 		if strings.EqualFold(a.Name, "WAIT") {
 			return a
 		}
-	}
-	if len(actions) == 0 {
-		return game.Action{Name: "WAIT"}
 	}
 	return game.Action{Name: "WAIT"}
 }
