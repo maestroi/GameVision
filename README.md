@@ -3,7 +3,7 @@
 A vision-driven local game agent. The first experiment is **Pokémon Red** through [gomeboy](https://github.com/maestroi/gomeboy): a local vision-language model sees rendered frames and issues Game Boy buttons.
 
 ```text
-game frame → local VLM → controller action → game → next frame
+game frame → local VLM → controller action → visual verification → game → next frame
 ```
 
 The point of v1 is not the strongest Pokémon player. It is to measure how far a fast local VLM can get when its primary observation is pixels.
@@ -17,7 +17,7 @@ gamevision \
   --game pokemon-red \
   --rom /path/to/pokemon-red.gb \
   --base-url http://localhost:8002/v1 \
-  --model Qwen3-VL-2B-Instruct \
+  --model Qwen3-VL-4B-Instruct \
   --goal "Start Pokémon Red and progress as far as possible." \
   --vision-scale 2
 ```
@@ -30,31 +30,56 @@ Pause / resume / stop the agent from the UI. Manual buttons are logged as `sourc
 
 GameVision does not embed llama.cpp. Point `--base-url` at an OpenAI-compatible multimodal endpoint.
 
-On this machine the default is `http://localhost:8002/v1`. That port is **single-model** `llama-server` from LM Studio, currently `qwen3.8-27b` with `--no-mmproj` (text only, `vision: false`). `GET /models` lists only the loaded alias. `POST /models/load` is 404 — there is no router catalog.
+The homelab deployment uses the RTX 4090 endpoint at `http://192.168.50.81:8002/v1` and expects `Qwen3-VL-4B-Instruct`. That physical port may also be used for a text-only model at other times, so the container does not trust the configured model name: it sends a real image request before starting and keeps probing while GameVision runs.
 
-Start with:
+Useful models for local experiments:
 
 - `Qwen3-VL-2B-Instruct`
 - `Qwen3-VL-4B-Instruct`
 
-Recommended sampling: `--temperature 0 --max-tokens 16`.
+Recommended sampling for the richer visual-policy reply: `--temperature 0 --max-tokens 96`.
 
 ## Switch models
 
 If the server is llama.cpp **router** mode, `switch` unloads VRAM then `POST /models/load`.
 
-If it is this host's single-model server, `switch` downloads the Qwen VL GGUF with curl (this LM Studio `llama-server` has no HTTPS, so `-hf` cannot work), **then** stops `qwen38-solo.service` and starts a transient `gamevision-llm` with `--model` and `--mmproj`. That is disruptive to anything else using :8002.
+For a single-model `llama-server`, model switching is host-specific and may restart that inference process. The debug UI exposes the same switch operation when the configured host supports it.
 
 ```bash
 gamevision models
 gamevision models switch Qwen3-VL-4B-Instruct
-make models-restore   # qwen3.8-27b back on :8002
+make models-restore   # restore the host's text model when desired
 ```
 
-There are no Qwen3-VL GGUFs in the LM Studio cache by default; the first VL switch downloads `Qwen3VL-*-Instruct-Q4_K_M.gguf` plus `mmproj-*-F16.gguf` (~3.3GB for 4B). You will see curl progress on stderr. Restore the coding model before leaving the session.
+`gamevision bench` can compare 2B and 4B (`--swap-models=false` skips host-side switching).
 
-The debug UI has the same control. `gamevision bench` switches between 2B and 4B (`--swap-models=false` skips it).
+## Homelab / Docker Swarm
 
+`main` publishes `ghcr.io/maestroi/gamevision:latest` plus an immutable commit-SHA tag. The Swarm stack publishes only a private host-mode port; your existing homelab router can route `gamevision.labstack.cc` to that port exactly like the PokePilot deployment.
+
+Defaults:
+
+```text
+image       ghcr.io/maestroi/gamevision:latest
+host port   18082
+container   8099
+VLM         http://192.168.50.81:8002/v1
+model       Qwen3-VL-4B-Instruct
+ROM         /opt/gamevision/roms/pokemon_red.gb
+state       /opt/gamevision
+```
+
+Deploy from a Swarm manager:
+
+```bash
+sudo mkdir -p /opt/gamevision/roms /opt/gamevision/sessions
+sudo cp /path/to/pokemon_red.gb /opt/gamevision/roms/pokemon_red.gb
+
+docker pull ghcr.io/maestroi/gamevision:latest
+docker stack deploy --with-registry-auth -c deploy/swarm.yml gamevision
+```
+
+The container performs a real multimodal probe before binding the UI. If `:8002` is currently text-only/no-mmproj, it waits. If vision disappears later, the container stops GameVision and Swarm restarts into that same preflight gate. See [`deploy/README.md`](deploy/README.md) for the full homelab workflow and overrides.
 
 ## Timing
 
@@ -67,7 +92,7 @@ Defaults, all configurable:
 | `--vision-scale` | 2 (320×288, nearest-neighbor) |
 | `--history` | 8 |
 
-There is no battle/dialogue/menu special-case timing in v1.
+There is no RAM-derived battle/dialogue/menu timing logic.
 
 ## Sessions
 
@@ -82,6 +107,8 @@ sessions/<timestamp>-pokemon-red-<model>/
 
 `--save-decision-frames=true` by default. `--save-all-frames` is off.
 
+The decision log includes vision-derived scene/subgoal context, requested/applied movement repeat, expected result, confidence, visual outcome, and perceptual change score.
+
 ## Scenarios
 
 Reproducible starts use gomeboy save states. The state is not shown to the model.
@@ -91,7 +118,7 @@ gamevision \
   --rom /path/to/pokemon-red.gb \
   --scenario scenarios/pokemon-red/title-screen.json \
   --base-url http://localhost:8002/v1 \
-  --model Qwen3-VL-2B-Instruct
+  --model Qwen3-VL-4B-Instruct
 ```
 
 Capture extra states from the web UI (**Save state**) while paused, then point a scenario JSON at the file. See `scenarios/pokemon-red/`.
@@ -103,7 +130,8 @@ gamevision bench \
   --rom /path/to/pokemon-red.gb \
   --scenario scenarios/pokemon-red/title-screen.json \
   --base-url http://localhost:8002/v1 \
-  --models Qwen3-VL-2B-Instruct,Qwen3-VL-4B-Instruct
+  --models Qwen3-VL-2B-Instruct,Qwen3-VL-4B-Instruct \
+  --max-tokens 96
 ```
 
 Identical goal, prompt, scale, timing, temperature, token cap, and decision limit. Writes `comparison.json` with median/p95 latency, invalid outputs, and timeouts.
@@ -114,26 +142,27 @@ Identical goal, prompt, scale, timing, temperature, token cap, and decision limi
 cmd/gamevision          CLI
 pkg/game                Observation / Action / Game
 internal/agent          visual policy + strict parser
-internal/inference      OpenAI-compatible VLM client
-internal/runtime        observe → decide → apply
-internal/vision         nearest-neighbor scale + PNG
+internal/inference      OpenAI-compatible VLM HTTP
+internal/runtime        observe → decide → apply → visually verify
+internal/vision         scaling, PNG, perceptual frame change
 internal/recording      session artifacts
 internal/metrics        latency summaries
 internal/ui             spectator / control plane
 games/pokemonred        gomeboy adapter
+deploy                   container + Swarm deployment
 ```
 
 gomeboy already exposes framebuffer, `Press`/`Release`, `StepFrame(s)`, and save states. GameVision consumes that API; it does not poke emulator internals.
 
 ## Build
 
-Requires Go 1.26+. This repo expects a sibling checkout of gomeboy (`../gomeboy` via `go.mod` replace).
+Requires Go 1.26+. Local development expects a sibling checkout of gomeboy (`../gomeboy` via `go.mod` replace). The container build deliberately drops that local replace and downloads the pinned `github.com/maestroi/gomeboy v1.1.0` module, so the image build is self-contained.
 
 ```bash
 make test
 make run
-make models-4b       # restart :8002 with Qwen3-VL-4B (stops qwen38-solo)
-make models-restore  # put qwen3.8-27b back
+make models-4b
+make models-restore
 make bench
 ```
 
