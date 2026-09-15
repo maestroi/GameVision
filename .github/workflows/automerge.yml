@@ -21,11 +21,11 @@ jobs:
     timeout-minutes: 5
 
     steps:
-      - name: Merge owner-authored PR after successful CI
+      - name: Merge maestroi-authored PR after successful CI
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
-          OWNER: ${{ github.repository_owner }}
+          TRUSTED_AUTHOR: maestroi
           PR_NUMBER: ${{ github.event.workflow_run.pull_requests[0].number }}
           HEAD_SHA: ${{ github.event.workflow_run.pull_requests[0].head.sha }}
         shell: bash
@@ -50,8 +50,8 @@ jobs:
             exit 0
           fi
 
-          if [[ "$author" != "$OWNER" ]]; then
-            echo "Skipping PR #${PR_NUMBER}: author ${author} is not repository owner ${OWNER}."
+          if [[ "$author" != "$TRUSTED_AUTHOR" ]]; then
+            echo "Skipping PR #${PR_NUMBER}: author ${author} is not trusted auto-merge user ${TRUSTED_AUTHOR}."
             exit 0
           fi
 
