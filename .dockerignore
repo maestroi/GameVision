@@ -1,0 +1,12 @@
+.git
+.github
+.idea
+.vscode
+roms
+sessions
+*.gb
+*.gbc
+*.sav
+*.state
+*.gbrun
+gamevision
