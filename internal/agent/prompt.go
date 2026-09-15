@@ -7,68 +7,75 @@ import (
 	"github.com/maestroi/gamevision/pkg/game"
 )
 
-// RenderPrompt builds a small visual-policy prompt. It must stay small: the
-// screenshot carries state. Do not inject walkthroughs, maps, or RAM facts.
+// RenderPrompt builds a compact visual-control prompt. The screenshot is the
+// source of truth; remembered scene/subgoal text is only continuity from prior
+// visual decisions, never hidden game state.
 func RenderPrompt(req DecisionRequest) string {
 	var b strings.Builder
-	b.WriteString("You are controlling a video game by looking at the current screen.\n\n")
+	b.WriteString("You control a video game only by looking at the current screenshot.\n\n")
 	if req.Game != "" {
-		b.WriteString("Game:\n")
+		b.WriteString("Game: ")
 		b.WriteString(req.Game)
-		b.WriteString("\n\n")
+		b.WriteString("\n")
 	}
-	b.WriteString("Current goal:\n")
+	b.WriteString("Human goal: ")
 	if req.Goal != "" {
 		b.WriteString(req.Goal)
 	} else {
 		b.WriteString("Progress as far as possible.")
 	}
-	b.WriteString("\n\nValid controller actions:\n\n")
+	b.WriteString("\n")
+	if req.Subgoal != "" {
+		b.WriteString("Current visual subgoal: ")
+		b.WriteString(req.Subgoal)
+		b.WriteString("\n")
+	}
+	if req.LastScene != "" {
+		b.WriteString("Previous scene guess: ")
+		b.WriteString(req.LastScene)
+		b.WriteString("\n")
+	}
+	if req.LastOutcome != "" {
+		b.WriteString("Result of the previous controller input: ")
+		b.WriteString(req.LastOutcome)
+		if req.LastExpected != "" {
+			b.WriteString("; expected: ")
+			b.WriteString(req.LastExpected)
+		}
+		b.WriteString("\n")
+	}
+
+	b.WriteString("\nValid controller actions:\n")
 	for _, a := range req.Actions {
 		b.WriteString(a.Name)
 		b.WriteByte('\n')
 	}
-	b.WriteString("\nRecent actions (already done — do not copy them):\n")
+	b.WriteString("\nRecent controller inputs (context only; repeating a direction is normal):\n")
 	if len(req.History) == 0 {
 		b.WriteString("(none)\n")
 	} else {
 		for _, a := range req.History {
 			b.WriteString(a.Name)
-			b.WriteByte('\n')
+			b.WriteByte(' ')
 		}
+		b.WriteByte('\n')
 	}
-	b.WriteString("\nChoose from the screenshot.\n")
-	b.WriteString("Walking around a room, town, or path: use UP, DOWN, LEFT, or RIGHT. Do not mash A.\n")
-	b.WriteString("A dialogue box with text and a blinking ▼ / triangle: press A once to advance, then look again.\n")
-	b.WriteString("Title or start screen: START or A.\n")
-	b.WriteString("WAIT is rare (animation with no prompt).\n")
-	b.WriteString("Black bars on a Game Boy shot are off-camera, not a hallway.\n")
-	b.WriteString("If you can see a door, stairs, or opening at the edge of the floor, walk toward it.\n")
-	if name, n := trailingStreak(req.History); n >= 3 {
-		fmt.Fprintf(&b, "You already pressed %s %d times in a row. Do not press %s again unless the screenshot still clearly requires it.\n", name, n, name)
-	}
-	if req.UnchangedScreen {
-		b.WriteString("The picture did not change after your last action. Repeat is failing; pick a different action (usually a different d-pad direction, not more A).\n")
-	}
-	b.WriteString("\nReturn exactly one valid action as JSON {\"action\":\"NAME\"} and nothing else.\n")
+
+	b.WriteString("\nChoose a short visual subgoal and the next controller input from the screenshot.\n")
+	b.WriteString("Repeated d-pad movement is GOOD when a visible path is clear. Use repeat 1-4 for UP/DOWN/LEFT/RIGHT to keep moving toward the same visible target.\n")
+	b.WriteString("Use repeat=1 for A, B, START, SELECT, or WAIT. Dialogue text should normally advance with A once, then look again.\n")
+	b.WriteString("If the previous input caused no_visual_change, reconsider the obstacle or direction; do not blindly repeat it.\n")
+	b.WriteString("For a title/start screen use START or A. WAIT is mainly for an animation with no prompt.\n")
+	b.WriteString("Black bars on a Game Boy shot are off-camera, not a hallway. If you can see a door, stairs, opening, menu choice, or other obvious target, make the subgoal about reaching/using it.\n")
+	b.WriteString("Do not invent walkthrough facts or locations that are not visible or already established by the visual history.\n")
+	b.WriteString("\nReturn exactly one compact JSON object and no prose:\n")
+	b.WriteString(`{"scene":"overworld|dialogue|menu|battle|title|transition|unknown","subgoal":"short visible objective","action":"NAME","repeat":1,"expected":"visible result after the input","confidence":0.0}`)
+	b.WriteString("\n")
+	fmt.Fprint(&b, "For clear straight walking, repeat may be 2-4; otherwise keep repeat=1.\n")
 	return b.String()
 }
 
-func trailingStreak(history []game.Action) (string, int) {
-	if len(history) == 0 {
-		return "", 0
-	}
-	name := strings.ToUpper(strings.TrimSpace(history[len(history)-1].Name))
-	n := 0
-	for i := len(history) - 1; i >= 0; i-- {
-		if strings.ToUpper(strings.TrimSpace(history[i].Name)) != name {
-			break
-		}
-		n++
-	}
-	return name, n
-}
-
+// HistoryNames is useful in tests and telemetry adapters.
 func HistoryNames(history []game.Action) []string {
 	out := make([]string, len(history))
 	for i, a := range history {

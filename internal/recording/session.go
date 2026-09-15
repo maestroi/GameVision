@@ -13,24 +13,32 @@ import (
 
 // Event is one JSONL line: an agent decision or a human input.
 type Event struct {
-	DecisionNumber int       `json:"decision_number,omitempty"`
-	Timestamp      time.Time `json:"timestamp"`
-	Source         string    `json:"source"`
-	Model          string    `json:"model,omitempty"`
-	FrameSize      string    `json:"frame_size,omitempty"`
-	Frame          uint64    `json:"frame,omitempty"`
-	PreprocessNs   int64     `json:"preprocessing_latency_ns,omitempty"`
-	InferenceNs    int64     `json:"inference_latency_ns,omitempty"`
-	ParseNs        int64     `json:"parse_latency_ns,omitempty"`
-	EmulatorNs     int64     `json:"emulator_latency_ns,omitempty"`
-	TotalNs        int64     `json:"total_decision_latency_ns,omitempty"`
-	RawResponse    string    `json:"raw_response,omitempty"`
-	ParsedAction   string    `json:"parsed_action"`
-	Invalid        bool      `json:"invalid,omitempty"`
-	Timeout        bool      `json:"timeout,omitempty"`
-	Retried        bool      `json:"retried,omitempty"`
-	Error          string    `json:"error,omitempty"`
-	RepeatedState  bool      `json:"repeated_visual_state,omitempty"`
+	DecisionNumber    int       `json:"decision_number,omitempty"`
+	Timestamp         time.Time `json:"timestamp"`
+	Source            string    `json:"source"`
+	Model             string    `json:"model,omitempty"`
+	FrameSize         string    `json:"frame_size,omitempty"`
+	Frame             uint64    `json:"frame,omitempty"`
+	PreprocessNs      int64     `json:"preprocessing_latency_ns,omitempty"`
+	InferenceNs       int64     `json:"inference_latency_ns,omitempty"`
+	ParseNs           int64     `json:"parse_latency_ns,omitempty"`
+	EmulatorNs        int64     `json:"emulator_latency_ns,omitempty"`
+	TotalNs           int64     `json:"total_decision_latency_ns,omitempty"`
+	RawResponse       string    `json:"raw_response,omitempty"`
+	ParsedAction      string    `json:"parsed_action"`
+	Scene             string    `json:"scene,omitempty"`
+	Subgoal           string    `json:"subgoal,omitempty"`
+	Expected          string    `json:"expected,omitempty"`
+	Confidence        float64   `json:"confidence,omitempty"`
+	RequestedRepeat   int       `json:"requested_repeat,omitempty"`
+	AppliedRepeat     int       `json:"applied_repeat,omitempty"`
+	VisualOutcome     string    `json:"visual_outcome,omitempty"`
+	VisualChangeScore float64   `json:"visual_change_score,omitempty"`
+	Invalid           bool      `json:"invalid,omitempty"`
+	Timeout           bool      `json:"timeout,omitempty"`
+	Retried           bool      `json:"retried,omitempty"`
+	Error             string    `json:"error,omitempty"`
+	RepeatedState     bool      `json:"repeated_visual_state,omitempty"`
 }
 
 // SessionMeta is written to session.json at start and rewritten at stop.
