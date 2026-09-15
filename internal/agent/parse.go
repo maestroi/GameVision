@@ -16,12 +16,17 @@ type actionJSON struct {
 }
 
 type policyJSON struct {
-	Scene      string  `json:"scene"`
-	Subgoal    string  `json:"subgoal"`
-	Action     string  `json:"action"`
-	Repeat     int     `json:"repeat"`
-	Expected   string  `json:"expected"`
-	Confidence float64 `json:"confidence"`
+	Scene           string  `json:"scene"`
+	SceneShort      string  `json:"s"`
+	Subgoal         string  `json:"subgoal"`
+	SubgoalShort    string  `json:"g"`
+	Action          string  `json:"action"`
+	ActionShort     string  `json:"a"`
+	Repeat          int     `json:"repeat"`
+	RepeatShort     int     `json:"r"`
+	Expected        string  `json:"expected"`
+	Confidence      float64 `json:"confidence"`
+	ConfidenceShort float64 `json:"c"`
 }
 
 // PolicyOutput is the model's short-horizon visual control decision. All fields
@@ -35,10 +40,10 @@ type PolicyOutput struct {
 	Confidence float64
 }
 
-// ParsePolicy parses the richer visual-policy contract while remaining
-// backward compatible with the original {"action":"..."} and plain-action
-// replies. Repeat is clamped to a small bounded burst; runtime applies stricter
-// controller-specific limits before execution.
+// ParsePolicy accepts the compact controller contract as well as the older
+// verbose JSON contract and plain-action replies. Compact replies keep model
+// decode time low while preserving the visual scene/subgoal memory used by the
+// runtime.
 func ParsePolicy(raw string, actions []game.Action) (PolicyOutput, bool) {
 	text := strings.TrimSpace(raw)
 	if text == "" {
@@ -48,27 +53,45 @@ func ParsePolicy(raw string, actions []game.Action) (PolicyOutput, bool) {
 	if obj, ok := jsonObject(text); ok {
 		var p policyJSON
 		if err := json.Unmarshal([]byte(obj), &p); err == nil {
-			if action, ok := allowedAction(p.Action, actions); ok {
+			actionName := firstNonEmpty(p.Action, p.ActionShort)
+			if action, ok := allowedAction(actionName, actions); ok {
 				repeat := p.Repeat
+				if repeat == 0 {
+					repeat = p.RepeatShort
+				}
 				if repeat <= 0 {
 					repeat = 1
 				}
 				if repeat > 4 {
 					repeat = 4
 				}
+
 				confidence := p.Confidence
+				if confidence == 0 && p.ConfidenceShort != 0 {
+					confidence = p.ConfidenceShort
+				}
+				if confidence > 1 && confidence <= 100 {
+					confidence /= 100
+				}
 				if confidence < 0 {
 					confidence = 0
 				}
 				if confidence > 1 {
 					confidence = 1
 				}
+
+				scene := normalizeScene(firstNonEmpty(p.Scene, p.SceneShort))
+				subgoal := clip(strings.TrimSpace(firstNonEmpty(p.Subgoal, p.SubgoalShort)), 160)
+				expected := clip(strings.TrimSpace(p.Expected), 200)
+				if expected == "" {
+					expected = defaultExpected(scene, action.Name)
+				}
 				return PolicyOutput{
-					Scene:      clip(strings.ToLower(strings.TrimSpace(p.Scene)), 40),
-					Subgoal:    clip(strings.TrimSpace(p.Subgoal), 160),
+					Scene:      scene,
+					Subgoal:    subgoal,
 					Action:     action,
 					Repeat:     repeat,
-					Expected:   clip(strings.TrimSpace(p.Expected), 200),
+					Expected:   expected,
 					Confidence: confidence,
 				}, true
 			}
@@ -79,7 +102,7 @@ func ParsePolicy(raw string, actions []game.Action) (PolicyOutput, bool) {
 	if !ok {
 		return PolicyOutput{}, false
 	}
-	return PolicyOutput{Action: action, Repeat: 1}, true
+	return PolicyOutput{Action: action, Repeat: 1, Expected: defaultExpected("", action.Name)}, true
 }
 
 // ParseAction maps model text onto the provided action space. Anything outside
@@ -173,6 +196,74 @@ func jsonObject(text string) (string, bool) {
 		return "", false
 	}
 	return text[start : end+1], true
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func normalizeScene(scene string) string {
+	s := strings.ToLower(strings.TrimSpace(scene))
+	switch s {
+	case "o", "overworld":
+		return "overworld"
+	case "d", "dialog", "dialogue", "text":
+		return "dialogue"
+	case "m", "menu":
+		return "menu"
+	case "b", "battle", "combat":
+		return "battle"
+	case "t", "title", "start":
+		return "title"
+	case "x", "transition", "loading", "animation":
+		return "transition"
+	case "u", "unknown", "":
+		return "unknown"
+	default:
+		return clip(s, 40)
+	}
+}
+
+func defaultExpected(scene, action string) string {
+	a := strings.ToUpper(strings.TrimSpace(action))
+	switch scene {
+	case "dialogue":
+		if a == "A" || a == "B" {
+			return "dialogue advances or closes"
+		}
+	case "title":
+		if a == "START" || a == "A" {
+			return "screen advances"
+		}
+	case "menu", "battle":
+		switch a {
+		case "UP", "DOWN", "LEFT", "RIGHT":
+			return "visible selection moves"
+		case "A":
+			return "visible selection activates"
+		case "B":
+			return "menu or prompt backs out"
+		}
+	}
+	switch a {
+	case "UP", "DOWN", "LEFT", "RIGHT":
+		return "player or view moves"
+	case "A":
+		return "visible interaction advances"
+	case "B":
+		return "visible prompt or menu backs out"
+	case "START", "SELECT":
+		return "screen or menu changes"
+	case "WAIT":
+		return "visible animation advances"
+	default:
+		return "visible state changes"
+	}
 }
 
 func clip(s string, max int) string {
