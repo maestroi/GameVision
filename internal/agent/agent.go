@@ -9,6 +9,8 @@ import (
 	"github.com/maestroi/gamevision/pkg/game"
 )
 
+const minPolicyTokens = 96
+
 // DecisionRequest is one visual-policy query. The screenshot remains the
 // source of truth; the extra fields are only short-lived memory inferred from
 // earlier screenshots and action outcomes.
@@ -60,7 +62,14 @@ type Completer interface {
 	Complete(ctx context.Context, prompt string, png []byte) (inference.Result, error)
 }
 
+type tokenBudgeter interface {
+	EnsureMaxTokens(min int)
+}
+
 func New(client Completer) *VisionAgent {
+	if b, ok := client.(tokenBudgeter); ok {
+		b.EnsureMaxTokens(minPolicyTokens)
+	}
 	return &VisionAgent{Client: client}
 }
 
