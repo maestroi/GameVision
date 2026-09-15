@@ -5,9 +5,11 @@ RUN apk add --no-cache ca-certificates git
 WORKDIR /src
 COPY . .
 # Local development uses ../gomeboy. The container build is hermetic and uses
-# the required v1.1.0 module instead, matching CI's pinned sibling checkout.
+# the required v1.1.0 module instead. Dropping the local replace means the build
+# stage must refresh module sums before compiling; this changes only the image
+# layer and does not modify the checked-in go.mod/go.sum files.
 RUN go mod edit -dropreplace github.com/maestroi/gomeboy && \
-    go mod download && \
+    go mod tidy && \
     CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o /out/gamevision ./cmd/gamevision
 
 FROM alpine:3.20
