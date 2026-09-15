@@ -19,7 +19,7 @@ jobs:
   test:
     name: Go checks
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
 
     steps:
       - name: Check out GameVision
@@ -69,3 +69,15 @@ jobs:
       - name: Build
         working-directory: GameVision
         run: go build ./cmd/gamevision
+
+      - name: Validate deployment files
+        working-directory: GameVision
+        shell: bash
+        run: |
+          set -euo pipefail
+          sh -n deploy/entrypoint.sh
+          docker compose -f deploy/swarm.yml config >/dev/null
+
+      - name: Build container
+        working-directory: GameVision
+        run: docker build -f deploy/Dockerfile -t gamevision:ci .
