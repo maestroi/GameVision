@@ -1,9 +1,9 @@
 # GameVision homelab deployment
 
-GameVision is deployed like the private PokePilot service: Docker Swarm owns the
-container and publishes one host-mode port; the existing homelab router owns the
-`gamevision.labstack.cc` hostname. This repository intentionally does not create
-Traefik labels, DNS records, certificates, or a public route.
+GameVision is deployed like GamePilot and the PokePilot operator UI: Docker Swarm
+owns the container, Traefik on the `web` overlay owns `gamevision.labstack.cc`,
+and a host-mode port remains as a LAN fallback. DNS for `*.labstack.cc` already
+points at Traefik.
 
 ## Defaults
 
@@ -16,8 +16,8 @@ Traefik labels, DNS records, certificates, or a public route.
 - ROM on the Swarm node: `/opt/gamevision/roms/pokemon_red.gb`
 - persistent data: `/opt/gamevision` -> `/data`
 
-Point the existing internal router for `gamevision.labstack.cc` at the Swarm
-node's HTTP port `18082`, the same way `pokemon.labstack.cc` is routed today.
+Traefik routes `Host(gamevision.labstack.cc)` to container port `8099`. The
+optional host-mode publish is `18082` on whichever worker runs the replica.
 
 ## Vision availability gate
 
@@ -61,13 +61,13 @@ Useful checks:
 ```bash
 docker stack services gamevision
 docker service logs -f gamevision_app
+curl https://gamevision.labstack.cc/status
 curl http://127.0.0.1:18082/status
 ```
 
 While the non-vision model is loaded on `:8002`, logs should show the vision
-preflight retrying and the `curl` will not connect. Once Qwen3-VL-4B is serving
-multimodal requests, the UI becomes available on port `18082` and therefore on
-`gamevision.labstack.cc` through the existing router.
+preflight retrying and Traefik will 502. Once Qwen3-VL-4B is serving
+multimodal requests, the UI is at `https://gamevision.labstack.cc`.
 
 ## Configuration
 

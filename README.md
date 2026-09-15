@@ -55,12 +55,13 @@ make models-restore   # restore the host's text model when desired
 
 ## Homelab / Docker Swarm
 
-`main` publishes `ghcr.io/maestroi/gamevision:latest` plus an immutable commit-SHA tag. The Swarm stack publishes only a private host-mode port; your existing homelab router can route `gamevision.labstack.cc` to that port exactly like the PokePilot deployment.
+`main` publishes `ghcr.io/maestroi/gamevision:latest` plus an immutable commit-SHA tag. The Swarm stack is Traefik-routed at `gamevision.labstack.cc` (same `web` overlay as GamePilot / PokePilot) and also publishes host-mode port `18082`.
 
 Defaults:
 
 ```text
 image       ghcr.io/maestroi/gamevision:latest
+hostname    gamevision.labstack.cc
 host port   18082
 container   8099
 VLM         http://192.168.50.81:8002/v1

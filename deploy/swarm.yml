@@ -1,13 +1,13 @@
 # GameVision private homelab stack.
 #
-# This deliberately mirrors the PokePilot deployment shape: the task publishes
-# one host-mode port and the existing homelab router owns DNS/TLS/routing for
-# gamevision.labstack.cc. There are no Traefik labels or public routes here.
+# Traefik on the Swarm `web` overlay owns gamevision.labstack.cc, the same way
+# gamepilot.labstack.cc and pokemon.labstack.cc are routed (Cloudflare HTTPS
+# → Traefik `web`, plus websecure for the LAN wildcard cert).
 #
 # Deploy from a Swarm manager:
 #   docker stack deploy --with-registry-auth -c deploy/swarm.yml gamevision
 #
-# Required on the node that receives the task:
+# Required on every worker that can receive the task:
 #   /opt/gamevision/roms/pokemon_red.gb
 #   /opt/gamevision/                 (persistent sessions/state)
 
@@ -64,6 +64,8 @@ services:
     volumes:
       - ${GAMEVISION_ROM:-/opt/gamevision/roms/pokemon_red.gb}:/rom/pokemon_red.gb:ro
       - ${GAMEVISION_STATE_DIR:-/opt/gamevision}:/data
+    networks:
+      - web
     ports:
       - target: 8099
         published: ${GAMEVISION_PORT:-18082}
@@ -71,6 +73,9 @@ services:
         mode: host
     deploy:
       replicas: 1
+      placement:
+        constraints:
+          - node.role == worker
       restart_policy:
         condition: any
         delay: 5s
@@ -80,3 +85,18 @@ services:
           memory: 128M
         limits:
           memory: 512M
+      labels:
+        - traefik.enable=true
+        - traefik.docker.network=web
+        - traefik.http.routers.gamevision.rule=Host(`gamevision.labstack.cc`)
+        - traefik.http.routers.gamevision.entrypoints=web
+        - traefik.http.routers.gamevision.service=gamevision
+        - traefik.http.routers.gamevision-secure.rule=Host(`gamevision.labstack.cc`)
+        - traefik.http.routers.gamevision-secure.entrypoints=websecure
+        - traefik.http.routers.gamevision-secure.tls=true
+        - traefik.http.routers.gamevision-secure.service=gamevision
+        - traefik.http.services.gamevision.loadbalancer.server.port=8099
+
+networks:
+  web:
+    external: true
