@@ -1,0 +1,90 @@
+name: Auto-merge
+
+on:
+  workflow_run:
+    workflows:
+      - CI
+    types:
+      - completed
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  merge:
+    name: Merge trusted PR
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Merge owner-authored PR after successful CI
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          OWNER: ${{ github.repository_owner }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          pr_number="$(
+            gh api "repos/${REPO}/commits/${HEAD_SHA}/pulls" \
+              --jq 'map(select(.state == "open" and .base.ref == "main")) | .[0].number // empty'
+          )"
+
+          if [[ -z "$pr_number" ]]; then
+            echo "No open PR into main found for ${HEAD_SHA}; nothing to merge."
+            exit 0
+          fi
+
+          metadata="$(gh pr view "$pr_number" --repo "$REPO" --json author,isDraft,headRefOid,title,baseRefName)"
+          author="$(jq -r '.author.login' <<<"$metadata")"
+          is_draft="$(jq -r '.isDraft' <<<"$metadata")"
+          current_head="$(jq -r '.headRefOid' <<<"$metadata")"
+          title="$(jq -r '.title' <<<"$metadata")"
+          base="$(jq -r '.baseRefName' <<<"$metadata")"
+
+          if [[ "$author" != "$OWNER" ]]; then
+            echo "Skipping PR #${pr_number}: author ${author} is not repository owner ${OWNER}."
+            exit 0
+          fi
+
+          if [[ "$is_draft" == "true" ]]; then
+            echo "Skipping PR #${pr_number}: PR is still a draft."
+            exit 0
+          fi
+
+          if [[ "$base" != "main" ]]; then
+            echo "Skipping PR #${pr_number}: base branch is ${base}, not main."
+            exit 0
+          fi
+
+          if [[ "$current_head" != "$HEAD_SHA" ]]; then
+            echo "Skipping PR #${pr_number}: head moved after the successful CI run."
+            exit 0
+          fi
+
+          if [[ "$title" == *"[no-automerge]"* ]]; then
+            echo "Skipping PR #${pr_number}: title contains [no-automerge]."
+            exit 0
+          fi
+
+          merged="$(
+            gh api \
+              --method PUT \
+              "repos/${REPO}/pulls/${pr_number}/merge" \
+              -f sha="$HEAD_SHA" \
+              -f merge_method=squash \
+              --jq '.merged'
+          )"
+
+          if [[ "$merged" != "true" ]]; then
+            echo "GitHub did not merge PR #${pr_number}."
+            exit 1
+          fi
+
+          echo "Merged PR #${pr_number} after successful CI."
