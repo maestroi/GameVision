@@ -61,6 +61,23 @@ func TestParsePolicyRichJSON(t *testing.T) {
 	}
 }
 
+func TestParsePolicyCompactJSON(t *testing.T) {
+	p, ok := ParsePolicy(`{"s":"d","g":"advance text","a":"A","r":1,"c":0.9}`, gbActions())
+	if !ok {
+		t.Fatal("expected compact policy to parse")
+	}
+	if p.Action.Name != "A" || p.Repeat != 1 || p.Scene != "dialogue" || p.Subgoal != "advance text" || p.Expected != "dialogue advances or closes" || p.Confidence != 0.9 {
+		t.Fatalf("%+v", p)
+	}
+}
+
+func TestParsePolicyCompactPercentConfidence(t *testing.T) {
+	p, ok := ParsePolicy(`{"s":"o","g":"reach door","a":"UP","r":2,"c":85}`, gbActions())
+	if !ok || p.Confidence != 0.85 {
+		t.Fatalf("%+v ok=%v", p, ok)
+	}
+}
+
 func TestParsePolicyClampsRepeat(t *testing.T) {
 	p, ok := ParsePolicy(`{"action":"LEFT","repeat":99}`, gbActions())
 	if !ok || p.Repeat != 4 {
@@ -108,7 +125,7 @@ func TestVisionAgentRetryThenWAIT(t *testing.T) {
 
 func TestVisionAgentRetryRecovers(t *testing.T) {
 	a := New(&scriptedCompleter{
-		replies: []inference.Result{{Text: "nope"}, {Text: `{"scene":"menu","subgoal":"close menu","action":"B","repeat":1,"expected":"menu closes","confidence":0.9}`}},
+		replies: []inference.Result{{Text: "nope"}, {Text: `{"s":"m","g":"close menu","a":"B","r":1,"c":0.9}`}},
 	})
 	d, err := a.Decide(context.Background(), DecisionRequest{
 		Observation: game.Observation{Image: []byte("x")},
@@ -122,28 +139,37 @@ func TestVisionAgentRetryRecovers(t *testing.T) {
 	}
 }
 
-func TestRenderPromptKeepsVisualContinuityWithoutAntiRepeat(t *testing.T) {
+func TestRenderPromptKeepsVisualContinuity(t *testing.T) {
 	p := RenderPrompt(DecisionRequest{
 		Game:         "Pokémon Red",
 		Goal:         "Leave the house.",
 		Subgoal:      "Reach the stairs.",
 		LastScene:    "overworld",
 		LastOutcome:  "visual_change",
-		LastExpected: "move closer to stairs",
+		LastExpected: "player or view moves",
 		Actions:      gbActions(),
 		History:      []game.Action{{Name: "RIGHT"}, {Name: "RIGHT"}, {Name: "RIGHT"}},
 	})
-	for _, s := range []string{"Pokémon Red", "Leave the house.", "Reach the stairs.", "visual_change", "RIGHT", "WAIT", `"subgoal"`, `"repeat"`, "repeating a direction is normal", "Repeated d-pad movement is GOOD", "Black bars"} {
+	for _, s := range []string{"Pokémon Red", "Leave the house.", "Reach the stairs.", "visual_change", "RIGHT", "WAIT", `"s"`, `"g"`, `"a"`, `"r"`, "Straight clear walking may repeat 2-4", "Black bars"} {
 		if !strings.Contains(p, s) {
 			t.Fatalf("prompt missing %q:\n%s", s, p)
 		}
 	}
-	for _, bad := range []string{"already done", "Do not press RIGHT again", "A 3 times in a row"} {
-		if strings.Contains(p, bad) {
-			t.Fatalf("anti-repeat prompt leaked %q:\n%s", bad, p)
-		}
-	}
 	if strings.Contains(strings.ToLower(p), "pallet") {
 		t.Fatal("prompt must not include walkthrough content")
+	}
+}
+
+func TestRenderPromptMarksLastFailedActionBlocked(t *testing.T) {
+	p := RenderPrompt(DecisionRequest{
+		Actions:     gbActions(),
+		History:     []game.Action{{Name: "UP"}, {Name: "RIGHT"}},
+		LastOutcome: "no_visual_change",
+	})
+	if !strings.Contains(p, "RIGHT just caused no visual change") {
+		t.Fatalf("prompt did not identify blocked action:\n%s", p)
+	}
+	if !strings.Contains(p, "choose another action") {
+		t.Fatalf("prompt missing escape instruction:\n%s", p)
 	}
 }

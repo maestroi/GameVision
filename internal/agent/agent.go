@@ -9,7 +9,7 @@ import (
 	"github.com/maestroi/gamevision/pkg/game"
 )
 
-const minPolicyTokens = 96
+const minPolicyTokens = 48
 
 // DecisionRequest is one visual-policy query. The screenshot remains the
 // source of truth; the extra fields are only short-lived memory inferred from
@@ -95,7 +95,7 @@ func (a *VisionAgent) Decide(ctx context.Context, req DecisionRequest) (Decision
 		return decisionFromPolicy(out, res.Text, res.Latency, parseDur, false), nil
 	}
 
-	retryPrompt := prompt + "\n\nYour previous reply was invalid. Return exactly one JSON object using a valid action and no prose."
+	retryPrompt := prompt + "\n\nPrevious reply was invalid or truncated. Return only the compact JSON object, using a valid action and no prose."
 	res2, err := a.Client.Complete(ctx, retryPrompt, req.Observation.Image)
 	if err != nil {
 		return Decision{
