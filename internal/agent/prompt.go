@@ -12,66 +12,92 @@ import (
 // visual decisions, never hidden game state.
 func RenderPrompt(req DecisionRequest) string {
 	var b strings.Builder
-	b.WriteString("You control a video game only by looking at the current screenshot.\n\n")
+	b.WriteString("You are a visual-only video-game controller. Decide from the current screenshot plus the short visual history below.\n")
 	if req.Game != "" {
 		b.WriteString("Game: ")
 		b.WriteString(req.Game)
-		b.WriteString("\n")
+		b.WriteByte('\n')
 	}
-	b.WriteString("Human goal: ")
+	b.WriteString("Goal: ")
 	if req.Goal != "" {
 		b.WriteString(req.Goal)
 	} else {
 		b.WriteString("Progress as far as possible.")
 	}
-	b.WriteString("\n")
-	if req.Subgoal != "" {
-		b.WriteString("Current visual subgoal: ")
-		b.WriteString(req.Subgoal)
-		b.WriteString("\n")
+	b.WriteByte('\n')
+
+	if req.LastScene != "" || req.Subgoal != "" {
+		b.WriteString("Visual memory:")
+		if req.LastScene != "" {
+			b.WriteString(" scene=")
+			b.WriteString(req.LastScene)
+		}
+		if req.Subgoal != "" {
+			b.WriteString(" subgoal=")
+			b.WriteString(req.Subgoal)
+		}
+		b.WriteByte('\n')
 	}
-	if req.LastScene != "" {
-		b.WriteString("Previous scene guess: ")
-		b.WriteString(req.LastScene)
-		b.WriteString("\n")
+
+	lastAction := ""
+	if len(req.History) > 0 {
+		lastAction = req.History[len(req.History)-1].Name
 	}
 	if req.LastOutcome != "" {
-		b.WriteString("Result of the previous controller input: ")
+		b.WriteString("Previous result:")
+		if lastAction != "" {
+			b.WriteByte(' ')
+			b.WriteString(lastAction)
+		}
+		b.WriteString(" -> ")
 		b.WriteString(req.LastOutcome)
 		if req.LastExpected != "" {
-			b.WriteString("; expected: ")
+			b.WriteString(" (expected ")
 			b.WriteString(req.LastExpected)
+			b.WriteByte(')')
 		}
-		b.WriteString("\n")
-	}
-
-	b.WriteString("\nValid controller actions:\n")
-	for _, a := range req.Actions {
-		b.WriteString(a.Name)
 		b.WriteByte('\n')
 	}
-	b.WriteString("\nRecent controller inputs (context only; repeating a direction is normal):\n")
-	if len(req.History) == 0 {
-		b.WriteString("(none)\n")
-	} else {
-		for _, a := range req.History {
-			b.WriteString(a.Name)
+
+	b.WriteString("Actions: ")
+	for i, a := range req.Actions {
+		if i > 0 {
 			b.WriteByte(' ')
 		}
-		b.WriteByte('\n')
+		b.WriteString(a.Name)
 	}
+	b.WriteByte('\n')
 
-	b.WriteString("\nChoose a short visual subgoal and the next controller input from the screenshot.\n")
-	b.WriteString("Repeated d-pad movement is GOOD when a visible path is clear. Use repeat 1-4 for UP/DOWN/LEFT/RIGHT to keep moving toward the same visible target.\n")
-	b.WriteString("Use repeat=1 for A, B, START, SELECT, or WAIT. Dialogue text should normally advance with A once, then look again.\n")
-	b.WriteString("If the previous input caused no_visual_change, reconsider the obstacle or direction; do not blindly repeat it.\n")
-	b.WriteString("For a title/start screen use START or A. WAIT is mainly for an animation with no prompt.\n")
-	b.WriteString("Black bars on a Game Boy shot are off-camera, not a hallway. If you can see a door, stairs, opening, menu choice, or other obvious target, make the subgoal about reaching/using it.\n")
-	b.WriteString("Do not invent walkthrough facts or locations that are not visible or already established by the visual history.\n")
-	b.WriteString("\nReturn exactly one compact JSON object and no prose:\n")
-	b.WriteString(`{"scene":"overworld|dialogue|menu|battle|title|transition|unknown","subgoal":"short visible objective","action":"NAME","repeat":1,"expected":"visible result after the input","confidence":0.0}`)
-	b.WriteString("\n")
-	fmt.Fprint(&b, "For clear straight walking, repeat may be 2-4; otherwise keep repeat=1.\n")
+	b.WriteString("Recent: ")
+	if len(req.History) == 0 {
+		b.WriteString("none")
+	} else {
+		for i, a := range req.History {
+			if i > 0 {
+				b.WriteByte(' ')
+			}
+			b.WriteString(a.Name)
+		}
+	}
+	b.WriteByte('\n')
+
+	b.WriteString("Rules:\n")
+	b.WriteString("- Use only what is visible or established by the visual history. Do not use walkthrough knowledge.\n")
+	b.WriteString("- Dialogue/text box with no visible choice: press A once, then look again. A menu or choice list is not plain dialogue.\n")
+	b.WriteString("- Title/start prompt: use START or A. Menu/battle: follow the visible cursor/text.\n")
+	b.WriteString("- Overworld: move toward a visible door, stairs, opening, path, NPC, or other useful target. Straight clear walking may repeat 2-4.\n")
+	b.WriteString("- A/B/START/SELECT/WAIT always use repeat 1. Black bars are off-camera, not paths.\n")
+	if req.LastOutcome == "no_visual_change" && lastAction != "" {
+		fmt.Fprintf(&b, "- IMPORTANT: %s just caused no visual change. Treat it as blocked/unhelpful on this frame; choose another action unless WAIT is needed for a visible animation.\n", lastAction)
+	} else {
+		b.WriteString("- If an input causes no visual change, reconsider instead of blindly repeating it.\n")
+	}
+	b.WriteString("- If the scene visibly changed, replace any stale subgoal with a new visible one.\n")
+
+	b.WriteString("Return exactly one compact JSON object, no prose:\n")
+	b.WriteString(`{"s":"o|d|m|b|t|x|u","g":"2-5 word visible goal","a":"ACTION","r":1,"c":0.0}`)
+	b.WriteByte('\n')
+	b.WriteString("s codes: o=overworld d=dialogue m=menu b=battle t=title x=transition u=unknown. c is confidence 0..1.\n")
 	return b.String()
 }
 
