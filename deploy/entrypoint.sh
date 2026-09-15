@@ -3,6 +3,7 @@ set -eu
 
 base_url="${GAMEVISION_BASE_URL:-http://192.168.50.81:8002/v1}"
 model="${GAMEVISION_MODEL:-Qwen3-VL-4B-Instruct}"
+model_match="${GAMEVISION_MODEL_MATCH:-Qwen3-VL-4B}"
 api_key="${GAMEVISION_API_KEY:-}"
 probe_timeout="${GAMEVISION_VISION_PROBE_TIMEOUT:-30}"
 wait_interval="${GAMEVISION_VISION_WAIT_INTERVAL:-10}"
@@ -29,18 +30,33 @@ vision_probe() {
   printf '%s' "$response" | grep -q '"choices"'
 }
 
+model_probe() {
+  url="${base_url%/}/models"
+  if [ -n "$api_key" ]; then
+    response="$(curl -fsS --connect-timeout 3 --max-time 10 \
+      -H "Authorization: Bearer $api_key" "$url" 2>/dev/null)" || return 1
+  else
+    response="$(curl -fsS --connect-timeout 3 --max-time 10 "$url" 2>/dev/null)" || return 1
+  fi
+
+  [ -z "$model_match" ] && return 0
+  needle="$(printf '%s' "$model_match" | tr '[:upper:]' '[:lower:]' | tr -cd '[:alnum:]')"
+  haystack="$(printf '%s' "$response" | tr '[:upper:]' '[:lower:]' | tr -cd '[:alnum:]')"
+  [ -n "$needle" ] && printf '%s' "$haystack" | grep -q "$needle"
+}
+
 wait_for_vision() {
-  echo "GameVision: waiting for multimodal model '$model' at $base_url"
-  until vision_probe; do
-    echo "GameVision: vision probe failed; inference is unavailable or is not currently multimodal"
+  echo "GameVision: waiting for '$model_match' / multimodal model '$model' at $base_url"
+  until model_probe && vision_probe; do
+    echo "GameVision: vision preflight failed; inference is unavailable, the 4B VL model is not loaded, or multimodal input is disabled"
     sleep "$wait_interval"
   done
-  echo "GameVision: vision probe succeeded"
+  echo "GameVision: 4B vision preflight succeeded"
 }
 
 case "${1:-}" in
   probe)
-    vision_probe
+    model_probe && vision_probe
     exit $?
     ;;
   wait-for-vision)
@@ -53,9 +69,10 @@ if [ "${GAMEVISION_REQUIRE_VISION:-1}" != "0" ]; then
   wait_for_vision
 fi
 
-# Keep PID 1 as a small supervisor. If :8002 is switched back to the text-only
-# model while GameVision is running, stop the game process. Swarm restarts this
-# task and the next instance waits in preflight until vision is available again.
+# Keep PID 1 as a small supervisor. Startup used a real image request. Once the
+# game is running, monitor the cheap /v1/models endpoint so the watchdog does not
+# compete with gameplay for VLM inference cycles. If the 4B VL model is swapped
+# out, stop the game process; Swarm restarts into the same startup preflight.
 /usr/local/bin/gamevision "$@" &
 child=$!
 
@@ -73,8 +90,8 @@ if [ "${GAMEVISION_WATCH_VISION:-1}" != "0" ]; then
     if ! kill -0 "$child" 2>/dev/null; then
       break
     fi
-    if ! vision_probe; then
-      echo "GameVision: multimodal inference disappeared; stopping until the vision model returns"
+    if ! model_probe; then
+      echo "GameVision: configured 4B vision model disappeared; stopping until it returns"
       stop_child
       exit 1
     fi
