@@ -7,9 +7,9 @@ api_key="${GAMEVISION_API_KEY:-}"
 probe_timeout="${GAMEVISION_VISION_PROBE_TIMEOUT:-30}"
 wait_interval="${GAMEVISION_VISION_WAIT_INTERVAL:-10}"
 watch_interval="${GAMEVISION_VISION_WATCH_INTERVAL:-30}"
-# 1x1 PNG. A text-only llama-server started without mmproj rejects this
-# multimodal request; a working vision endpoint accepts it.
-probe_png='iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII='
+# 32x32 PNG. Large enough for common VLM image preprocessors while still tiny.
+# A text-only llama-server started without mmproj rejects this multimodal request.
+probe_png='iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAIAAAD8GO2jAAAAKElEQVR42u3NQQEAAAQEMPTvfErw2wqsk9SnqWcCgUAgEAgEAoHgygLH8QM9BsqtpQAAAABJRU5ErkJggg=='
 
 vision_probe() {
   payload="$(printf '{\"model\":\"%s\",\"temperature\":0,\"max_tokens\":4,\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"image_url\",\"image_url\":{\"url\":\"data:image/png;base64,%s\"}},{\"type\":\"text\",\"text\":\"Reply OK.\"}]}]}' "$model" "$probe_png")"
