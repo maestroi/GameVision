@@ -2,8 +2,6 @@ package runtime
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
 	"strings"
 	"sync"
@@ -12,6 +10,7 @@ import (
 	"github.com/maestroi/gamevision/internal/agent"
 	"github.com/maestroi/gamevision/internal/metrics"
 	"github.com/maestroi/gamevision/internal/recording"
+	"github.com/maestroi/gamevision/internal/vision"
 	"github.com/maestroi/gamevision/pkg/game"
 )
 
@@ -26,22 +25,28 @@ const (
 
 // Snapshot is the observational UI/status payload. It contains no RAM state.
 type Snapshot struct {
-	Status        Status        `json:"status"`
-	Game          string        `json:"game"`
-	Goal          string        `json:"goal"`
-	Model         string        `json:"model"`
-	Decision      int           `json:"decision_number"`
-	LastAction    string        `json:"last_action"`
-	LastSource    string        `json:"last_source"`
-	Recent        []string      `json:"recent_actions"`
-	LastLatency   time.Duration `json:"last_latency_ns"`
-	LastLatencyMS float64       `json:"last_latency_ms"`
-	Runtime       time.Duration `json:"runtime_ns"`
-	RuntimeHuman  string        `json:"runtime"`
-	Invalid       int           `json:"invalid_outputs"`
-	Timeouts      int           `json:"timeouts"`
-	RepeatedState int           `json:"repeated_visual_state"`
-	Error         string        `json:"error,omitempty"`
+	Status          Status        `json:"status"`
+	Game            string        `json:"game"`
+	Goal            string        `json:"goal"`
+	Subgoal         string        `json:"subgoal,omitempty"`
+	Model           string        `json:"model"`
+	Decision        int           `json:"decision_number"`
+	LastAction      string        `json:"last_action"`
+	LastSource      string        `json:"last_source"`
+	LastScene       string        `json:"last_scene,omitempty"`
+	LastOutcome     string        `json:"last_visual_outcome,omitempty"`
+	LastExpected    string        `json:"last_expected,omitempty"`
+	LastRepeat      int           `json:"last_repeat,omitempty"`
+	LastChangeScore float64       `json:"last_visual_change_score,omitempty"`
+	Recent          []string      `json:"recent_actions"`
+	LastLatency     time.Duration `json:"last_latency_ns"`
+	LastLatencyMS   float64       `json:"last_latency_ms"`
+	Runtime         time.Duration `json:"runtime_ns"`
+	RuntimeHuman    string        `json:"runtime"`
+	Invalid         int           `json:"invalid_outputs"`
+	Timeouts        int           `json:"timeouts"`
+	RepeatedState   int           `json:"repeated_visual_state"`
+	Error           string        `json:"error,omitempty"`
 }
 
 type Config struct {
@@ -53,31 +58,36 @@ type Config struct {
 	Paused               bool
 }
 
-// Runtime is the closed observe → decide → apply loop.
+// Runtime is the closed observe -> decide -> apply -> verify loop.
 type Runtime struct {
 	game  game.Game
 	agent agent.Agent
 	sess  *recording.Session
 	cfg   Config
 
-	mu        sync.Mutex
-	status    Status
-	started   time.Time
-	decision  int
-	history   []game.Action
-	lastAct   string
-	lastSrc   string
-	lastLat   time.Duration
-	lastErr   string
-	invalid   int
-	timeouts  int
-	repeated  int
-	consecErr int
-	lastHash  string
-	tracker   metrics.Tracker
-	preview   []byte
-	stop      chan struct{}
-	stopped   bool
+	mu           sync.Mutex
+	status       Status
+	started      time.Time
+	decision     int
+	history      []game.Action
+	subgoal      string
+	lastScene    string
+	lastOutcome  string
+	lastExpected string
+	lastRepeat   int
+	lastChange   float64
+	lastAct      string
+	lastSrc      string
+	lastLat      time.Duration
+	lastErr      string
+	invalid      int
+	timeouts     int
+	repeated     int
+	consecErr    int
+	tracker      metrics.Tracker
+	preview      []byte
+	stop         chan struct{}
+	stopped      bool
 }
 
 func New(g game.Game, a agent.Agent, sess *recording.Session, cfg Config) *Runtime {
@@ -91,7 +101,7 @@ func New(g game.Game, a agent.Agent, sess *recording.Session, cfg Config) *Runti
 	if cfg.Paused {
 		st = StatusPaused
 	}
-	r := &Runtime{
+	return &Runtime{
 		game:   g,
 		agent:  a,
 		sess:   sess,
@@ -99,7 +109,6 @@ func New(g game.Game, a agent.Agent, sess *recording.Session, cfg Config) *Runti
 		status: st,
 		stop:   make(chan struct{}),
 	}
-	return r
 }
 
 func (r *Runtime) Start(ctx context.Context) {
@@ -182,15 +191,15 @@ func (r *Runtime) step(ctx context.Context) error {
 	}
 	r.capturePreview()
 
-	hash := sha256.Sum256(obs.Image)
-	hashHex := hex.EncodeToString(hash[:])
 	r.mu.Lock()
-	repeated := r.lastHash != "" && r.lastHash == hashHex
-	r.lastHash = hashHex
 	hist := append([]game.Action(nil), r.history...)
 	goal := r.cfg.Goal
 	model := r.cfg.Model
 	n := r.decision + 1
+	subgoal := r.subgoal
+	lastScene := r.lastScene
+	lastOutcome := r.lastOutcome
+	lastExpected := r.lastExpected
 	r.mu.Unlock()
 
 	if r.sess != nil && r.sess.ShouldSaveDecisionFrame() {
@@ -199,24 +208,28 @@ func (r *Runtime) step(ctx context.Context) error {
 		}
 	}
 
-	actions := actionsForDecision(r.game.Actions(), hist, repeated)
 	dec, err := r.agent.Decide(ctx, agent.DecisionRequest{
-		Observation:     obs,
-		Game:            r.game.Name(),
-		Goal:            goal,
-		Actions:         actions,
-		History:         hist,
-		UnchangedScreen: repeated,
+		Observation:  obs,
+		Game:         r.game.Name(),
+		Goal:         goal,
+		Actions:      r.game.Actions(),
+		History:      hist,
+		Subgoal:      subgoal,
+		LastScene:    lastScene,
+		LastOutcome:  lastOutcome,
+		LastExpected: lastExpected,
 	})
 	if err != nil {
 		return err
 	}
 
+	requestedRepeat := boundedRepeat(dec.Action, dec.Repeat)
 	emuStart := time.Now()
-	if err := r.game.Apply(ctx, dec.Action); err != nil {
+	appliedRepeat, outcome, changeScore, err := r.applyVerified(ctx, obs, dec.Action, requestedRepeat)
+	emu := time.Since(emuStart)
+	if err != nil {
 		return err
 	}
-	emu := time.Since(emuStart)
 	total := time.Since(totalStart)
 	r.capturePreview()
 
@@ -225,14 +238,26 @@ func (r *Runtime) step(ctx context.Context) error {
 	r.lastAct = dec.Action.Name
 	r.lastSrc = string(game.SourceAgent)
 	r.lastLat = total
-	r.pushHistory(dec.Action)
+	r.lastRepeat = appliedRepeat
+	r.lastOutcome = outcome
+	r.lastChange = changeScore
+	r.lastExpected = dec.Expected
+	if dec.Subgoal != "" {
+		r.subgoal = dec.Subgoal
+	}
+	if dec.Scene != "" {
+		r.lastScene = dec.Scene
+	}
+	for i := 0; i < appliedRepeat; i++ {
+		r.pushHistory(dec.Action)
+	}
 	if dec.Invalid {
 		r.invalid++
 	}
 	if dec.Timeout {
 		r.timeouts++
 	}
-	if repeated {
+	if outcome == string(vision.ChangeNone) {
 		r.repeated++
 	}
 	if dec.Error != "" || dec.Timeout || dec.Invalid {
@@ -250,28 +275,37 @@ func (r *Runtime) step(ctx context.Context) error {
 		Invalid:    dec.Invalid,
 		Timeout:    dec.Timeout,
 	})
+	persistedSubgoal := r.subgoal
 	r.mu.Unlock()
 
 	if r.sess != nil {
 		_ = r.sess.Log(recording.Event{
-			DecisionNumber: n,
-			Timestamp:      time.Now(),
-			Source:         string(game.SourceAgent),
-			Model:          model,
-			FrameSize:      fmt.Sprintf("%dx%d", obs.Width, obs.Height),
-			Frame:          obs.Frame,
-			PreprocessNs:   pre.Nanoseconds(),
-			InferenceNs:    dec.Inference.Nanoseconds(),
-			ParseNs:        dec.Parse.Nanoseconds(),
-			EmulatorNs:     emu.Nanoseconds(),
-			TotalNs:        total.Nanoseconds(),
-			RawResponse:    dec.Raw,
-			ParsedAction:   dec.Action.Name,
-			Invalid:        dec.Invalid,
-			Timeout:        dec.Timeout,
-			Retried:        dec.Retried,
-			Error:          dec.Error,
-			RepeatedState:  repeated,
+			DecisionNumber:    n,
+			Timestamp:         time.Now(),
+			Source:            string(game.SourceAgent),
+			Model:             model,
+			FrameSize:         fmt.Sprintf("%dx%d", obs.Width, obs.Height),
+			Frame:             obs.Frame,
+			PreprocessNs:      pre.Nanoseconds(),
+			InferenceNs:       dec.Inference.Nanoseconds(),
+			ParseNs:           dec.Parse.Nanoseconds(),
+			EmulatorNs:        emu.Nanoseconds(),
+			TotalNs:           total.Nanoseconds(),
+			RawResponse:       dec.Raw,
+			ParsedAction:      dec.Action.Name,
+			Scene:             dec.Scene,
+			Subgoal:           persistedSubgoal,
+			Expected:          dec.Expected,
+			Confidence:        dec.Confidence,
+			RequestedRepeat:   requestedRepeat,
+			AppliedRepeat:     appliedRepeat,
+			VisualOutcome:     outcome,
+			VisualChangeScore: changeScore,
+			Invalid:           dec.Invalid,
+			Timeout:           dec.Timeout,
+			Retried:           dec.Retried,
+			Error:             dec.Error,
+			RepeatedState:     outcome == string(vision.ChangeNone),
 		})
 	}
 	if stopForErrors {
@@ -281,6 +315,54 @@ func (r *Runtime) step(ctx context.Context) error {
 		r.Stop()
 	}
 	return nil
+}
+
+// applyVerified executes a bounded controller burst and visually verifies every
+// individual input. A burst continues only while the frame shows ordinary
+// visual progress. It stops immediately on no change, a major scene change, or
+// an unclassifiable frame so the model can look again before doing more damage.
+func (r *Runtime) applyVerified(ctx context.Context, before game.Observation, action game.Action, repeat int) (int, string, float64, error) {
+	current := before
+	outcome := string(vision.ChangeUnknown)
+	changeScore := 0.0
+	applied := 0
+	for i := 0; i < repeat; i++ {
+		if err := r.game.Apply(ctx, action); err != nil {
+			return applied, outcome, changeScore, err
+		}
+		applied++
+		after, err := r.game.Observe(ctx)
+		if err != nil {
+			return applied, outcome, changeScore, err
+		}
+		delta, err := vision.ComparePNG(current.Image, after.Image)
+		if err != nil {
+			outcome = string(vision.ChangeUnknown)
+			break
+		}
+		outcome = string(delta.Kind)
+		changeScore = delta.ChangedFraction
+		current = after
+		if delta.Kind != vision.ChangeSome {
+			break
+		}
+	}
+	return applied, outcome, changeScore, nil
+}
+
+func boundedRepeat(action game.Action, requested int) int {
+	if requested <= 0 {
+		requested = 1
+	}
+	if requested > 4 {
+		requested = 4
+	}
+	switch strings.ToUpper(strings.TrimSpace(action.Name)) {
+	case "UP", "DOWN", "LEFT", "RIGHT":
+		return requested
+	default:
+		return 1
+	}
 }
 
 func (r *Runtime) pushHistory(a game.Action) {
@@ -305,23 +387,40 @@ func (r *Runtime) capturePreview() {
 }
 
 func (r *Runtime) Human(ctx context.Context, action game.Action) error {
+	before, _ := r.game.Observe(ctx)
 	emuStart := time.Now()
 	if err := r.game.Apply(ctx, action); err != nil {
 		return err
 	}
 	emu := time.Since(emuStart)
+	after, _ := r.game.Observe(ctx)
+	outcome := string(vision.ChangeUnknown)
+	changeScore := 0.0
+	if len(before.Image) != 0 && len(after.Image) != 0 {
+		if delta, err := vision.ComparePNG(before.Image, after.Image); err == nil {
+			outcome = string(delta.Kind)
+			changeScore = delta.ChangedFraction
+		}
+	}
 	r.capturePreview()
 	r.mu.Lock()
 	r.lastAct = action.Name
 	r.lastSrc = string(game.SourceHuman)
+	r.lastOutcome = outcome
+	r.lastChange = changeScore
+	r.lastRepeat = 1
 	r.pushHistory(action)
 	r.mu.Unlock()
 	if r.sess != nil {
 		_ = r.sess.Log(recording.Event{
-			Timestamp:    time.Now(),
-			Source:       string(game.SourceHuman),
-			ParsedAction: action.Name,
-			EmulatorNs:   emu.Nanoseconds(),
+			Timestamp:         time.Now(),
+			Source:            string(game.SourceHuman),
+			ParsedAction:      action.Name,
+			EmulatorNs:        emu.Nanoseconds(),
+			AppliedRepeat:     1,
+			VisualOutcome:     outcome,
+			VisualChangeScore: changeScore,
+			RepeatedState:     outcome == string(vision.ChangeNone),
 		})
 	}
 	return nil
@@ -371,22 +470,28 @@ func (r *Runtime) Snapshot() Snapshot {
 		recent[i] = a.Name
 	}
 	return Snapshot{
-		Status:        r.status,
-		Game:          r.game.Name(),
-		Goal:          r.cfg.Goal,
-		Model:         r.cfg.Model,
-		Decision:      r.decision,
-		LastAction:    r.lastAct,
-		LastSource:    r.lastSrc,
-		Recent:        recent,
-		LastLatency:   r.lastLat,
-		LastLatencyMS: float64(r.lastLat) / float64(time.Millisecond),
-		Runtime:       run,
-		RuntimeHuman:  run.Truncate(time.Second).String(),
-		Invalid:       r.invalid,
-		Timeouts:      r.timeouts,
-		RepeatedState: r.repeated,
-		Error:         r.lastErr,
+		Status:          r.status,
+		Game:            r.game.Name(),
+		Goal:            r.cfg.Goal,
+		Subgoal:         r.subgoal,
+		Model:           r.cfg.Model,
+		Decision:        r.decision,
+		LastAction:      r.lastAct,
+		LastSource:      r.lastSrc,
+		LastScene:       r.lastScene,
+		LastOutcome:     r.lastOutcome,
+		LastExpected:    r.lastExpected,
+		LastRepeat:      r.lastRepeat,
+		LastChangeScore: r.lastChange,
+		Recent:          recent,
+		LastLatency:     r.lastLat,
+		LastLatencyMS:   float64(r.lastLat) / float64(time.Millisecond),
+		Runtime:         run,
+		RuntimeHuman:    run.Truncate(time.Second).String(),
+		Invalid:         r.invalid,
+		Timeouts:        r.timeouts,
+		RepeatedState:   r.repeated,
+		Error:           r.lastErr,
 	}
 }
 
@@ -418,28 +523,4 @@ func (r *Runtime) SetModel(name string) {
 	r.mu.Lock()
 	r.cfg.Model = name
 	r.mu.Unlock()
-}
-
-// actionsForDecision drops the last motor command when it produced no visual
-// change, so the policy cannot keep walking into the same wall.
-func actionsForDecision(all []game.Action, hist []game.Action, unchanged bool) []game.Action {
-	if !unchanged || len(hist) == 0 {
-		return all
-	}
-	return dropAction(all, hist[len(hist)-1].Name)
-}
-
-func dropAction(all []game.Action, name string) []game.Action {
-	want := strings.ToUpper(strings.TrimSpace(name))
-	out := make([]game.Action, 0, len(all))
-	for _, a := range all {
-		if strings.ToUpper(strings.TrimSpace(a.Name)) == want {
-			continue
-		}
-		out = append(out, a)
-	}
-	if len(out) == 0 {
-		return all
-	}
-	return out
 }
