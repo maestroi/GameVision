@@ -4,6 +4,14 @@ on:
   push:
     branches:
       - main
+  # Merges performed by the Auto-merge workflow use GITHUB_TOKEN. GitHub does
+  # not emit another push-triggered workflow from that token, so publish from
+  # the completed auto-merge workflow as well and always build current main.
+  workflow_run:
+    workflows:
+      - Auto-merge
+    types:
+      - completed
   workflow_dispatch:
 
 concurrency:
@@ -19,11 +27,19 @@ env:
 
 jobs:
   publish:
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - name: Check out GameVision
+      - name: Check out current main
         uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Resolve image revision
+        id: revision
+        shell: bash
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
       - name: Set up Buildx
         uses: docker/setup-buildx-action@v3
@@ -44,10 +60,10 @@ jobs:
           provenance: false
           sbom: false
           tags: |
-            ${{ env.IMAGE }}:${{ github.sha }}
+            ${{ env.IMAGE }}:${{ steps.revision.outputs.sha }}
             ${{ env.IMAGE }}:latest
           labels: |
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
-            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.revision=${{ steps.revision.outputs.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
