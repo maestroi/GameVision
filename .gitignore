@@ -1,0 +1,11 @@
+/roms
+/sessions
+*.gb
+*.gbc
+*.sav
+*.state
+*.gbrun
+.idea
+.vscode
+*.exe
+/gamevision

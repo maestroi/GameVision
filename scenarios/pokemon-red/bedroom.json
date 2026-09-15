@@ -1,0 +1,7 @@
+{
+  "name": "bedroom",
+  "game": "pokemon-red",
+  "goal": "Leave the player's house.",
+  "state": "bedroom.state",
+  "max_decisions": 120
+}

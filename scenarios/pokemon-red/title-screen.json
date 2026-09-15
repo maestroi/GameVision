@@ -1,0 +1,7 @@
+{
+  "name": "title-screen",
+  "game": "pokemon-red",
+  "goal": "Start Pokémon Red and progress as far as possible.",
+  "state": "",
+  "max_decisions": 200
+}

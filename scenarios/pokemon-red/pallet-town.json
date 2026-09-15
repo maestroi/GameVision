@@ -1,0 +1,7 @@
+{
+  "name": "pallet-town",
+  "game": "pokemon-red",
+  "goal": "Visually navigate Pallet Town.",
+  "state": "pallet-town.state",
+  "max_decisions": 200
+}
